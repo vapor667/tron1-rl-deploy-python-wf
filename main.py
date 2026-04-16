@@ -15,10 +15,13 @@ if __name__ == '__main__':
     # get rl type
     rl_type = os.getenv("RL_TYPE")
     if not rl_type:
-        print("\033[31mError: Please set the RL_TYPE using 'export RL_TYPE=isaacgym/isaaclab'.\033[0m")
+        print("\033[31mError: Please set the RL_TYPE using 'export RL_TYPE=isaacgym/isaaclab/mjlab'.\033[0m")
         sys.exit(1)
-    if rl_type != "isaacgym" and rl_type != "isaaclab":
-        print("\033[31mError: RL_TYPE {} is not supported, choose between 'isaacgym' and 'isaaclab'.\033[0m".format(rl_type))
+    if rl_type not in ("isaacgym", "isaaclab", "mjlab"):
+        print("\033[31mError: RL_TYPE {} is not supported, choose between 'isaacgym', 'isaaclab' and 'mjlab'.\033[0m".format(rl_type))
+        sys.exit(1)
+    if rl_type == "mjlab" and not robot_type.startswith("WF"):
+        print("\033[31mError: RL_TYPE 'mjlab' is currently only supported for wheelfoot robots.\033[0m")
         sys.exit(1)
 
     # Create a Robot instance of the specified type

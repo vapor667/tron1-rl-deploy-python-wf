@@ -30,6 +30,7 @@ PointfootCfg:
     wheel_joint_damping: 0.8
     wheel_joint_torque_limit: 40
     action_scale_pos: 0.25
+    action_scale_vel: 5.0
     decimation: 10
     user_torque_limit: 80
 
@@ -63,3 +64,33 @@ PointfootCfg:
     lin_vel_x: 1.5
     lin_vel_y: 1.0
     ang_vel_yaw: 0.5
+
+  user_cmd_offsets:
+    lin_vel_x: 0.0
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+
+  mjlab:
+    control:
+      action_scale_pos: 0.25
+      action_scale_vel: 1.0
+    size:
+      observations_size: 31
+      commands_size: 3
+      obs_history_length: 20
+      encoder_output_size: 0
+    command:
+      base_pose_scale_xy: 2.0
+      base_se3_decrease_rate: 1.0
+      target_orient_x_axis: [1.0, 0.0]
+      input_deadband: 0.0
+      input_offsets:
+        lin_vel_x: 0.0 # 0.0035
+        lin_vel_y: 0.0 # 0.01
+        ang_vel_yaw: 0.0 # 0.19
+      cmd_offsets:
+        lin_vel_x: 0.0035
+        lin_vel_y: 0.01
+        ang_vel_yaw: 0.0
+      policy_commands_size: 0
+      history_term_dims: [3, 3, 3, 6, 8, 8]

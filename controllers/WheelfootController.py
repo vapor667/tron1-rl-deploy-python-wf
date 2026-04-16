@@ -19,11 +19,12 @@ class WheelfootController:
         self.robot = robot
         self.robot_type = robot_type
         self.rl_type = rl_type
+        self.is_mjlab = self.rl_type == "mjlab"
 
         # Load configuration and model file paths based on robot type
         self.config_file = f'{model_dir}/{self.robot_type}/params.yaml'
         self.model_policy = f'{model_dir}/{self.robot_type}/policy/{self.rl_type}/policy.onnx'
-        self.model_encoder = f'{model_dir}/{self.robot_type}/policy/{self.rl_type}/encoder.onnx'
+        self.model_encoder = None if self.is_mjlab else f'{model_dir}/{self.robot_type}/policy/{self.rl_type}/encoder.onnx'
 
         # Load configuration settings from the YAML file
         self.load_config(self.config_file)
@@ -110,53 +111,130 @@ class WheelfootController:
         self.policy_input_shapes = [self.policy_session.get_inputs()[i].shape for i in range(self.policy_session.get_inputs().__len__())]
         self.policy_output_shapes = [self.policy_session.get_outputs()[i].shape for i in range(self.policy_session.get_outputs().__len__())]
 
-        self.encoder_session = ort.InferenceSession(self.model_encoder, sess_options=session_options, providers=cpu_providers)
-        self.encoder_input_names = [self.encoder_session.get_inputs()[i].name for i in range(self.encoder_session.get_inputs().__len__())]
-        self.encoder_output_names = [self.encoder_session.get_outputs()[i].name for i in range(self.encoder_session.get_outputs().__len__())]
-        self.encoder_input_shapes = [self.encoder_session.get_inputs()[i].shape for i in range(self.encoder_session.get_inputs().__len__())]
-        self.encoder_output_shapes = [self.encoder_session.get_outputs()[i].shape for i in range(self.encoder_session.get_outputs().__len__())]
+        if self.is_mjlab:
+            self.encoder_session = None
+            self.encoder_input_names = []
+            self.encoder_output_names = []
+            self.encoder_input_shapes = []
+            self.encoder_output_shapes = []
+            self.validate_mjlab_policy()
+        else:
+            self.encoder_session = ort.InferenceSession(self.model_encoder, sess_options=session_options, providers=cpu_providers)
+            self.encoder_input_names = [self.encoder_session.get_inputs()[i].name for i in range(self.encoder_session.get_inputs().__len__())]
+            self.encoder_output_names = [self.encoder_session.get_outputs()[i].name for i in range(self.encoder_session.get_outputs().__len__())]
+            self.encoder_input_shapes = [self.encoder_session.get_inputs()[i].shape for i in range(self.encoder_session.get_inputs().__len__())]
+            self.encoder_output_shapes = [self.encoder_session.get_outputs()[i].shape for i in range(self.encoder_session.get_outputs().__len__())]
+
+    def validate_mjlab_policy(self):
+        expected_shapes = {
+            'obs_history': [1, self.obs_history_length * self.observations_size],
+            'obs': [1, self.observations_size],
+            'commands': [1, self.mjlab_policy_commands_size],
+        }
+        if len(self.policy_input_names) != 3:
+            raise ValueError(f"mjlab policy expects 3 inputs, got {self.policy_input_names}")
+
+        for input_name, input_shape in zip(self.policy_input_names, self.policy_input_shapes):
+            if input_name not in expected_shapes:
+                raise ValueError(f"Unexpected mjlab policy input '{input_name}'")
+            if list(input_shape) != expected_shapes[input_name]:
+                raise ValueError(
+                    f"mjlab policy input '{input_name}' shape {input_shape} does not match expected {expected_shapes[input_name]}"
+                )
+
+        if len(self.policy_output_shapes) != 1 or list(self.policy_output_shapes[0]) != [1, self.actions_size]:
+            raise ValueError(
+                f"mjlab policy output shape {self.policy_output_shapes} does not match expected [[1, {self.actions_size}]]"
+            )
+        print(
+            f"[mjlab] policy io checked: obs={self.observations_size}, "
+            f"obs_history={self.obs_history_length * self.observations_size}, "
+            f"actions={self.actions_size}, commands={self.mjlab_policy_commands_size}"
+        )
 
     # Load the configuration from a YAML file
     def load_config(self, config_file):
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
 
+        pointfoot_cfg = config['PointfootCfg']
+        mjlab_cfg = pointfoot_cfg.get('mjlab', {})
+        size_cfg = copy.deepcopy(pointfoot_cfg['size'])
+        self.control_cfg = copy.deepcopy(pointfoot_cfg['control'])
+        if self.is_mjlab:
+            self.control_cfg.update(mjlab_cfg.get('control', {}))
+            size_cfg.update(mjlab_cfg.get('size', {}))
+
         # Assign configuration parameters to controller variables
-        self.joint_names = config['PointfootCfg']['joint_names']
-        self.init_state = config['PointfootCfg']['init_state']['default_joint_angle']
-        self.stand_duration = config['PointfootCfg']['stand_mode']['stand_duration']
-        self.control_cfg = config['PointfootCfg']['control']
-        self.rl_cfg = config['PointfootCfg']['normalization']
-        self.obs_scales = config['PointfootCfg']['normalization']['obs_scales']
-        self.actions_size = config['PointfootCfg']['size']['actions_size']
-        self.commands_size = config['PointfootCfg']['size']['commands_size']
-        self.observations_size = config['PointfootCfg']['size']['observations_size']
-        self.obs_history_length = config['PointfootCfg']['size']['obs_history_length']
-        self.encoder_output_size = config['PointfootCfg']['size']['encoder_output_size']
-        self.imu_orientation_offset = np.array(list(config['PointfootCfg']['imu_orientation_offset'].values()))
-        self.user_cmd_cfg = config['PointfootCfg']['user_cmd_scales']
-        self.user_cmd_offsets = config['PointfootCfg']['user_cmd_offsets']
-        self.loop_frequency = config['PointfootCfg']['loop_frequency']
+        self.joint_names = pointfoot_cfg['joint_names']
+        self.init_state = pointfoot_cfg['init_state']['default_joint_angle']
+        self.stand_duration = pointfoot_cfg['stand_mode']['stand_duration']
+        self.rl_cfg = pointfoot_cfg['normalization']
+        self.obs_scales = self.rl_cfg['obs_scales']
+        self.actions_size = size_cfg['actions_size']
+        self.commands_size = size_cfg['commands_size']
+        self.observations_size = size_cfg['observations_size']
+        self.obs_history_length = size_cfg['obs_history_length']
+        self.encoder_output_size = size_cfg['encoder_output_size']
+        self.imu_orientation_offset = np.array(list(pointfoot_cfg['imu_orientation_offset'].values()))
+        self.user_cmd_cfg = pointfoot_cfg['user_cmd_scales']
+        self.user_cmd_offsets = pointfoot_cfg.get('user_cmd_offsets', {
+            'lin_vel_x': 0.0,
+            'lin_vel_y': 0.0,
+            'ang_vel_yaw': 0.0,
+        })
+        self.loop_frequency = pointfoot_cfg['loop_frequency']
         self.encoder_input_size = self.obs_history_length * self.observations_size
 
         # Initialize variables for actions, observations, and commands
         self.proprio_history_vector = np.zeros(self.obs_history_length * self.observations_size)
         self.encoder_out = np.zeros(self.encoder_output_size)
         self.actions = np.zeros(self.actions_size)
+        self.command_actions = np.zeros(self.actions_size)
         self.observations = np.zeros(self.observations_size)
         self.last_actions = np.zeros(self.actions_size)
         self.commands = np.zeros(self.commands_size)  # command to the robot (e.g., velocity, rotation)
         self.scaled_commands = np.zeros(self.commands_size)
         self.base_lin_vel = np.zeros(3)  # base linear velocity
         self.base_position = np.zeros(3)  # robot base position
+        self.base_pose_commands = np.zeros(4)
+        self.base_se3_decrease_rate = np.zeros(1)
+        self.mjlab_history_buffers = []
         self.loop_count = 0  # loop iteration count
         self.stand_percent = 0  # percentage of time the robot has spent in stand mode
         self.policy_session = None  # ONNX model session for policy inference
         self.joint_num = len(self.joint_names)  # number of joints
 
-        self.joint_pos_idxs = config['PointfootCfg']['size']['jointpos_idxs']
-        self.wheel_joint_damping = config['PointfootCfg']['control']['wheel_joint_damping']
-        self.wheel_joint_torque_limit = config['PointfootCfg']['control']['wheel_joint_torque_limit']
+        self.joint_pos_idxs = size_cfg['jointpos_idxs']
+        self.wheel_joint_damping = self.control_cfg['wheel_joint_damping']
+        self.wheel_joint_torque_limit = self.control_cfg['wheel_joint_torque_limit']
+        self.action_scale_vel = self.control_cfg.get('action_scale_vel', 5.0)
+
+        mjlab_command_cfg = mjlab_cfg.get('command', {})
+        self.mjlab_base_pose_scale = mjlab_command_cfg.get('base_pose_scale_xy', 2.0)
+        self.mjlab_base_se3_decrease_rate = mjlab_command_cfg.get('base_se3_decrease_rate', 1.0)
+        self.mjlab_target_orient_x_axis = np.array(
+            mjlab_command_cfg.get('target_orient_x_axis', [1.0, 0.0]),
+            dtype=np.float32,
+        )
+        self.mjlab_command_offsets = np.array([
+            mjlab_command_cfg.get('input_offsets', {}).get('lin_vel_x', self.user_cmd_offsets['lin_vel_x']),
+            mjlab_command_cfg.get('input_offsets', {}).get('lin_vel_y', self.user_cmd_offsets['lin_vel_y']),
+            mjlab_command_cfg.get('input_offsets', {}).get('ang_vel_yaw', self.user_cmd_offsets['ang_vel_yaw']),
+        ])
+        self.mjlab_cmd_offsets = np.array([
+            mjlab_command_cfg.get('cmd_offsets', {}).get('lin_vel_x', 0.0),
+            mjlab_command_cfg.get('cmd_offsets', {}).get('lin_vel_y', 0.0),
+            mjlab_command_cfg.get('cmd_offsets', {}).get('ang_vel_yaw', 0.0),
+        ])
+        self.mjlab_command_deadband = mjlab_command_cfg.get('input_deadband', 0.05)
+        self.mjlab_policy_commands_size = mjlab_command_cfg.get('policy_commands_size', 0)
+        self.mjlab_history_term_dims = mjlab_command_cfg.get('history_term_dims', [3, 3, 3, 6, 8, 8])
+        if self.is_mjlab and sum(self.mjlab_history_term_dims) != self.observations_size:
+            raise ValueError(
+                f"mjlab history term dims {self.mjlab_history_term_dims} do not sum to observations_size {self.observations_size}"
+            )
+        self.policy_commands = np.zeros(self.mjlab_policy_commands_size)
 
         # Initialize joint angles based on the initial configuration
         self.init_joint_angles = np.zeros(len(self.joint_names))
@@ -226,13 +304,20 @@ class WheelfootController:
             self.compute_encoder()
             self.compute_actions()
             # Clip the actions within predefined limits
-            action_min = -self.rl_cfg['clip_scales']['clip_actions']
-            action_max = self.rl_cfg['clip_scales']['clip_actions']
-            self.actions = np.clip(self.actions, action_min, action_max)
+            if not self.is_mjlab:
+                action_min = -self.rl_cfg['clip_scales']['clip_actions']
+                action_max = self.rl_cfg['clip_scales']['clip_actions']
+                self.actions = np.clip(self.actions, action_min, action_max)
 
-            # swap actions positions back to deep first, only when action updated
-            if self.rl_type == "isaaclab":
-                self.actions = self.swap_positions(self.actions, reverse=True)
+            if self.is_mjlab:
+                self.last_actions = np.array(self.actions)
+                self.command_actions = self.reorder_mjlab_actions_to_robot(self.actions)
+            elif self.rl_type == "isaaclab":
+                self.command_actions = self.swap_positions(self.actions, reverse=True)
+            else:
+                self.command_actions = np.array(self.actions)
+
+        command_actions = np.array(self.command_actions)
 
         # Iterate over the joints and set commands based on actions
         joint_pos = np.array(self.robot_state_tmp.q)
@@ -249,22 +334,28 @@ class WheelfootController:
                               self.control_cfg['stiffness'])
 
                 # Clip action within limits
-                self.actions[i] = max(action_min / self.control_cfg['action_scale_pos'],
-                                      min(action_max / self.control_cfg['action_scale_pos'], self.actions[i]))
+                action_value = max(action_min / self.control_cfg['action_scale_pos'],
+                                   min(action_max / self.control_cfg['action_scale_pos'], command_actions[i]))
 
                 # Compute the desired joint position and set it
-                pos_des = self.actions[i] * self.control_cfg['action_scale_pos'] + self.init_joint_angles[i]
+                pos_des = action_value * self.control_cfg['action_scale_pos'] + self.init_joint_angles[i]
                 self.set_joint_command(i, pos_des, 0, 0, self.control_cfg['stiffness'], self.control_cfg['damping'])
 
                 # Save the last action for reference
-                self.last_actions[i] = self.actions[i]
+                if not self.is_mjlab:
+                    self.last_actions[i] = action_value
             else:
-                action_min = joint_vel[i] - self.wheel_joint_torque_limit / self.wheel_joint_damping
-                action_max = joint_vel[i] + self.wheel_joint_torque_limit / self.wheel_joint_damping
-                self.last_actions[i] = self.actions[i]
-                self.actions[i] = max(action_min / self.wheel_joint_damping,
-                                      min(action_max / self.wheel_joint_damping, self.actions[i]))
-                velocity_des = self.actions[i] * self.control_cfg['action_scale_vel'] * self.wheel_joint_damping
+                velocity_min = joint_vel[i] - self.wheel_joint_torque_limit / self.wheel_joint_damping
+                velocity_max = joint_vel[i] + self.wheel_joint_torque_limit / self.wheel_joint_damping
+
+                if self.is_mjlab:
+                    velocity_des = np.clip(command_actions[i] * self.action_scale_vel, velocity_min, velocity_max)
+                else:
+                    self.last_actions[i] = command_actions[i]
+                    action_value = max(velocity_min / self.wheel_joint_damping,
+                                       min(velocity_max / self.wheel_joint_damping, command_actions[i]))
+                    velocity_des = action_value * self.action_scale_vel * self.wheel_joint_damping
+
                 self.set_joint_command(i, 0, velocity_des, 0, 0, self.wheel_joint_damping)
 
     def swap_positions(self, initial_array, reverse=False, exclude_wheel=False):
@@ -279,6 +370,33 @@ class WheelfootController:
             else:
                 new_array[joint_idx_lab[i]] = initial_array[i]
         return new_array
+
+    def reorder_mjlab_actions_to_robot(self, policy_actions):
+        robot_actions = np.zeros(policy_actions.shape, dtype=policy_actions.dtype)
+        robot_actions[0:3] = policy_actions[0:3]
+        robot_actions[3] = policy_actions[6]
+        robot_actions[4:7] = policy_actions[3:6]
+        robot_actions[7] = policy_actions[7]
+        return robot_actions
+
+    def apply_deadband(self, value, deadband):
+        if abs(value) < deadband:
+            return 0.0
+        return value
+
+    def update_mjlab_history(self, obs_terms):
+        if self.is_first_rec_obs:
+            self.mjlab_history_buffers = [
+                np.tile(term.reshape(1, -1), (self.obs_history_length, 1)) for term in obs_terms
+            ]
+            self.is_first_rec_obs = False
+        else:
+            for buffer, term in zip(self.mjlab_history_buffers, obs_terms):
+                buffer[:-1] = buffer[1:]
+                buffer[-1] = term
+
+        self.proprio_history_vector = np.concatenate([buffer.reshape(-1) for buffer in self.mjlab_history_buffers])
+        self.proprio_history_buffer = np.array(self.proprio_history_vector)
     
     def compute_observation(self):
         # Convert IMU orientation from quaternion to Euler angles (ZYX convention)
@@ -324,6 +442,26 @@ class WheelfootController:
 
         # In WF, joint pos does not include wheel speed, index(3, 7) needs to be removed
         joint_pos_input = np.array([joint_pos_value[idx] for idx in self.joint_pos_idxs])
+
+        if self.is_mjlab:
+            effective_commands = np.clip(self.commands + self.mjlab_cmd_offsets, -1.0, 1.0)
+            self.scaled_commands = np.array(effective_commands)
+
+            # mjlab velocity-tracking actor obs layout (31):
+            # [velocity_commands(3), base_ang_vel(3), proj_gravity(3), joint_pos(6), joint_vel(8), last_action(8)]
+            obs_terms = [
+                self.scaled_commands,
+                base_ang_vel * self.obs_scales['ang_vel'],
+                projected_gravity,
+                joint_pos_input,
+                joint_velocities * self.obs_scales['dof_vel'],
+                actions,
+            ]
+            obs = np.concatenate(obs_terms)
+            self.update_mjlab_history(obs_terms)
+            self.observations = obs
+            return
+
         # swap positions in joint_pos, joint_vel and actions if mode is isaaclab
         if self.rl_type == "isaaclab":
             joint_pos_input = self.swap_positions(joint_pos_input, exclude_wheel=True)
@@ -383,6 +521,16 @@ class WheelfootController:
         """
         Computes the actions based on the current observations using the policy session.
         """
+        if self.is_mjlab:
+            inputs = {
+                'obs_history': self.proprio_history_vector.astype(np.float32).reshape(1, -1),
+                'obs': self.observations.astype(np.float32).reshape(1, -1),
+                'commands': self.policy_commands.astype(np.float32).reshape(1, -1),
+            }
+            output = self.policy_session.run(self.policy_output_names, inputs)
+            self.actions = np.array(output[0]).flatten()
+            return
+
         # Concatenate observations into a single tensor and convert to float32
         input_tensor = np.concatenate([self.encoder_out, self.observations, self.fake_pose_cmd, self.scaled_commands], axis=0)
         input_tensor = input_tensor.astype(np.float32)
@@ -407,6 +555,9 @@ class WheelfootController:
         of inputs for the encoder session and runs the encoder session to get the output. Finally,
         it flattens the output and stores it as the encoder output.
         """
+        if self.is_mjlab:
+            return
+
         # Concatenate the proprioceptive history buffer into a single tensor and convert to float32
         input_tensor = np.concatenate([self.proprio_history_buffer], axis=0)
         input_tensor = input_tensor.astype(np.float32)
@@ -504,6 +655,17 @@ class WheelfootController:
         linear_x  = 1.0 if linear_x > 1.0 else (-1.0 if linear_x < -1.0 else linear_x)
         linear_y  = 1.0 if linear_y > 1.0 else (-1.0 if linear_y < -1.0 else linear_y)
         angular_z = 1.0 if angular_z > 1.0 else (-1.0 if angular_z < -1.0 else angular_z)
+
+        if self.is_mjlab:
+            trimmed_commands = np.array([linear_x, linear_y, angular_z]) + self.mjlab_command_offsets
+            trimmed_commands = np.clip(trimmed_commands, -1.0, 1.0)
+            trimmed_commands = np.array([
+                self.apply_deadband(trimmed_commands[0], self.mjlab_command_deadband),
+                self.apply_deadband(trimmed_commands[1], self.mjlab_command_deadband),
+                self.apply_deadband(trimmed_commands[2], self.mjlab_command_deadband),
+            ])
+            self.commands[:] = trimmed_commands
+            return
 
         self.commands[0] = linear_x
         self.commands[1] = linear_y

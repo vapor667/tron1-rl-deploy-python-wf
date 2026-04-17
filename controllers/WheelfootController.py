@@ -146,11 +146,6 @@ class WheelfootController:
             raise ValueError(
                 f"mjlab policy output shape {self.policy_output_shapes} does not match expected [[1, {self.actions_size}]]"
             )
-        print(
-            f"[mjlab] policy io checked: obs={self.observations_size}, "
-            f"obs_history={self.obs_history_length * self.observations_size}, "
-            f"actions={self.actions_size}, commands={self.mjlab_policy_commands_size}"
-        )
 
     # Load the configuration from a YAML file
     def load_config(self, config_file):
@@ -229,7 +224,7 @@ class WheelfootController:
         ])
         self.mjlab_command_deadband = mjlab_command_cfg.get('input_deadband', 0.05)
         self.mjlab_policy_commands_size = mjlab_command_cfg.get('policy_commands_size', 0)
-        self.mjlab_history_term_dims = mjlab_command_cfg.get('history_term_dims', [3, 3, 3, 6, 8, 8])
+        self.mjlab_history_term_dims = mjlab_command_cfg.get('history_term_dims', [4, 1, 3, 3, 3, 6, 8, 8])
         if self.is_mjlab and sum(self.mjlab_history_term_dims) != self.observations_size:
             raise ValueError(
                 f"mjlab history term dims {self.mjlab_history_term_dims} do not sum to observations_size {self.observations_size}"
@@ -304,10 +299,9 @@ class WheelfootController:
             self.compute_encoder()
             self.compute_actions()
             # Clip the actions within predefined limits
-            if not self.is_mjlab:
-                action_min = -self.rl_cfg['clip_scales']['clip_actions']
-                action_max = self.rl_cfg['clip_scales']['clip_actions']
-                self.actions = np.clip(self.actions, action_min, action_max)
+            action_min = -self.rl_cfg['clip_scales']['clip_actions']
+            action_max = self.rl_cfg['clip_scales']['clip_actions']
+            self.actions = np.clip(self.actions, action_min, action_max)
 
             if self.is_mjlab:
                 self.last_actions = np.array(self.actions)
@@ -445,11 +439,18 @@ class WheelfootController:
 
         if self.is_mjlab:
             effective_commands = np.clip(self.commands + self.mjlab_cmd_offsets, -1.0, 1.0)
+            self.base_pose_commands = np.array([
+                effective_commands[0] * self.mjlab_base_pose_scale,
+                effective_commands[1] * self.mjlab_base_pose_scale,
+                self.mjlab_target_orient_x_axis[0],
+                self.mjlab_target_orient_x_axis[1],
+            ])
+            self.base_se3_decrease_rate = np.array([self.mjlab_base_se3_decrease_rate])
             self.scaled_commands = np.array(effective_commands)
 
-            # mjlab velocity-tracking actor obs layout (31):
-            # [velocity_commands(3), base_ang_vel(3), proj_gravity(3), joint_pos(6), joint_vel(8), last_action(8)]
             obs_terms = [
+                self.base_pose_commands,
+                self.base_se3_decrease_rate,
                 self.scaled_commands,
                 base_ang_vel * self.obs_scales['ang_vel'],
                 projected_gravity,
@@ -459,7 +460,11 @@ class WheelfootController:
             ]
             obs = np.concatenate(obs_terms)
             self.update_mjlab_history(obs_terms)
-            self.observations = obs
+            self.observations = np.clip(
+                obs,
+                -self.rl_cfg['clip_scales']['clip_observations'],
+                self.rl_cfg['clip_scales']['clip_observations']
+            )
             return
 
         # swap positions in joint_pos, joint_vel and actions if mode is isaaclab

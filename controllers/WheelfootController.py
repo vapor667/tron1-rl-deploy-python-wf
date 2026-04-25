@@ -277,7 +277,7 @@ class WheelfootController:
                     pos_des = self.default_joint_angles[j] * (1 - self.stand_percent) + self.init_state[self.joint_names[j]] * self.stand_percent
                     self.set_joint_command(j, pos_des, 0, 0, self.control_cfg['stiffness'], self.control_cfg['damping'])
                 else:
-                    self.set_joint_command(0, 0, 0, self.wheel_joint_damping, 0, 0)
+                    self.set_joint_command(j, 0, 0, self.wheel_joint_damping, 0, 0)
             # Increment the stand percentage over time
             self.stand_percent += 3 / (self.stand_duration * self.loop_frequency)
         else:

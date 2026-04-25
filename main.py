@@ -46,7 +46,10 @@ if __name__ == '__main__':
       controller = controllers.PointfootController(f'{os.path.dirname(os.path.abspath(__file__))}/controllers/model', robot, robot_type, rl_type, start_controller)
       controller.run()
     elif robot_type.startswith("WF"):
-      controller = controllers.WheelfootController(f'{os.path.dirname(os.path.abspath(__file__))}/controllers/model', robot, robot_type, rl_type, start_controller)
+      if rl_type == "mjlab":
+        controller = controllers.MjlabWheelfootController(f'{os.path.dirname(os.path.abspath(__file__))}/controllers/model', robot, robot_type, rl_type, start_controller)
+      else:
+        controller = controllers.WheelfootController(f'{os.path.dirname(os.path.abspath(__file__))}/controllers/model', robot, robot_type, rl_type, start_controller)
       controller.run()
     elif robot_type.startswith("SF"):
       controller = controllers.SolefootController(f'{os.path.dirname(os.path.abspath(__file__))}/controllers/model', robot, robot_type, rl_type, start_controller)
